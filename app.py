@@ -1,4 +1,5 @@
-import os
+import streamlit as st
+import io
 import re
 from collections import defaultdict
 from datetime import date, datetime, timedelta
@@ -8,8 +9,8 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.styles.borders import Border, Side
 from openpyxl.utils import get_column_letter
 
+# --- КОНСТАНТЫ ---
 SHEET_NAME = "Детализация МП Инспектор"
-RESULT_FILE = f"итоги_фо_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
 
 COLUMN_KEYWORDS = {
     "subjekt": ["субъект рф"],
@@ -174,6 +175,8 @@ ALL_SUBJECTS.update(NEW_REGIONS)
 CANONICAL_SUBJECTS = {normalize_key: subject for subject in ALL_SUBJECTS for normalize_key in [re.sub(r"\s+", " ", subject.strip()).lower()]}
 
 
+# --- ФУНКЦИИ ОБРАБОТКИ ДАННЫХ ---
+
 def normalize_str(value):
     if value is None:
         return ""
@@ -213,14 +216,20 @@ def parse_date(value):
     return None
 
 
-def load_data(excel_file):
-    print(f"Загрузка файла {excel_file}, лист '{SHEET_NAME}'...")
-    if not os.path.exists(excel_file):
-        raise FileNotFoundError(f"Файл {excel_file} не найден.")
+@st.cache_data
+def load_data(uploaded_file):
+    if uploaded_file is None:
+        return None, None
 
-    wb = openpyxl.load_workbook(excel_file, data_only=True)
+    try:
+        wb = openpyxl.load_workbook(uploaded_file, data_only=True)
+    except Exception as e:
+        st.error(f"Ошибка при открытии файла: {e}")
+        return None, None
+
     if SHEET_NAME not in wb.sheetnames:
-        raise ValueError(f"Лист '{SHEET_NAME}' не найден.")
+        st.error(f"Лист '{SHEET_NAME}' не найден в файле.")
+        return None, None
 
     ws = wb[SHEET_NAME]
     headers = [cell.value if cell.value else "" for cell in ws[1]]
@@ -233,31 +242,38 @@ def load_data(excel_file):
         if idx is None:
             if key == "podrazd" and len(headers) > 17:
                 idx = 17
-                print("  [!] Столбец 'podrazd' не найден по имени — используем позицию 18 (индекс 17)")
             else:
-                missing.append(f"  • '{key}' (искали: {possible_names})")
-        else:
-            print(f"  Столбец '{key}' → '{headers[idx]}' (индекс {idx})")
+                missing.append(f"'{key}' (искали: {possible_names})")
         col_indices[key] = idx
 
     if missing:
-        raise ValueError("Не найдены обязательные столбцы:\n" + "\n".join(missing))
+        st.warning(f"Не найдены столбцы: {', '.join(missing)}. Некоторые функции могут не работать.")
+        # Не прерываем выполнение, чтобы попробовать обработать то, что есть
 
     data = [
         row for row in ws.iter_rows(min_row=2, values_only=True)
         if not all(cell is None for cell in row)
     ]
-    print(f"Загружено строк: {len(data)}")
+    
     return data, col_indices
 
 
 def filter_by_date(data, col_idx, date_from, date_to):
+    if "date_act" not in col_idx or col_idx["date_act"] is None:
+        st.error("Столбец с датой не найден.")
+        return [], 0, 0
+
     date_col = col_idx["date_act"]
     filtered = []
     skipped_out_of_range = 0
     skipped_invalid_date = 0
 
     for row in data:
+        # Проверка границ индекса
+        if date_col >= len(row):
+            skipped_invalid_date += 1
+            continue
+            
         parsed = parse_date(row[date_col])
         if parsed is None:
             skipped_invalid_date += 1
@@ -271,6 +287,11 @@ def filter_by_date(data, col_idx, date_from, date_to):
 
 
 def calculate_metrics_by_subject(data, col_idx):
+    # Проверка наличия всех необходимых колонок
+    required_keys = ["subjekt", "podrazd", "nom_knm", "vid", "status", "proverka_ogv", "vid_nadzora", "knd", "narusheniya", "s_vks", "ssylki"]
+    if not all(k in col_idx and col_idx[k] is not None for k in required_keys):
+        return {}
+
     subj_col = col_idx["subjekt"]
     podrazd_col = col_idx["podrazd"]
     knm_col = col_idx["nom_knm"]
@@ -287,6 +308,11 @@ def calculate_metrics_by_subject(data, col_idx):
     knm_info = {}
 
     for row in data:
+        # Проверка длины строки
+        max_idx = max([subj_col, knm_col, status_col, proverka_col, vid_nadzora_col, vid_col, knd_col, nar_col, vks_col, ssylki_col])
+        if len(row) <= max_idx:
+            continue
+
         reasons_base = []
         if normalize_str(row[status_col]) != "завершена":
             reasons_base.append("status")
@@ -403,7 +429,7 @@ def auto_adjust_row_heights(ws, start_row, end_row):
         ws.row_dimensions[row_idx].height = row_height
 
 
-def save_report(filename, district_rows, selected_date, week_start):
+def generate_report(district_rows, selected_date, week_start):
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
@@ -513,7 +539,6 @@ def save_report(filename, district_rows, selected_date, week_start):
                 cell_a.fill = green_fill
             
             # --- Жёлтый: столбцы C и G (с начала года) ---
-            # Столбец C (ВКС год %) - если ВКС < 10%
             cell_c = ws.cell(row_idx, 3)
             cell_c.border = border
             cell_c.font = Font(name="Arial", size=10)
@@ -521,7 +546,6 @@ def save_report(filename, district_rows, selected_date, week_start):
             if not year_vks_ok:
                 cell_c.fill = yellow_fill
             
-            # Столбец G (Очные год %) - если Очные < 80%
             cell_g = ws.cell(row_idx, 7)
             cell_g.border = border
             cell_g.font = Font(name="Arial", size=10)
@@ -530,9 +554,7 @@ def save_report(filename, district_rows, selected_date, week_start):
                 cell_g.fill = yellow_fill
             
             # --- Красный: столбцы E и I (за неделю) ---
-            # Только если с начала года не достигнуты показатели И за неделя не выполнена
             if not year_both_ok and not week_both_ok:
-                # Столбец E (ВКС неделя %) - если ВКС за неделю < 10%
                 cell_e = ws.cell(row_idx, 5)
                 cell_e.border = border
                 cell_e.font = Font(name="Arial", size=10)
@@ -540,7 +562,6 @@ def save_report(filename, district_rows, selected_date, week_start):
                 if not week_vks_ok:
                     cell_e.fill = red_fill
                 
-                # Столбец I (Очные неделя %) - если Очные за неделю < 80%
                 cell_i = ws.cell(row_idx, 9)
                 cell_i.border = border
                 cell_i.font = Font(name="Arial", size=10)
@@ -615,193 +636,72 @@ def save_report(filename, district_rows, selected_date, week_start):
             f"Прошедшая неделя: {week_start.strftime('%d.%m.%Y')} - {selected_date.strftime('%d.%m.%Y')}",
         )
 
-    wb.save(filename)
-    print(f"Файл сохранён: {filename}")
+    # Сохраняем в буфер памяти
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output
 
 
-def pick_excel_file():
-    import tkinter as tk
-    from tkinter import filedialog
-
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes("-topmost", True)
-    path = filedialog.askopenfilename(
-        title="Выберите файл выгрузки",
-        filetypes=[("Excel файлы", "*.xlsx *.xlsm"), ("Все файлы", "*.*")],
-    )
-    root.destroy()
-    if not path:
-        print("Файл не выбран, выход.")
-        raise SystemExit
-    return path
-
-
-def get_date_from_user(prompt):
-    import calendar as cal_mod
-    import tkinter as tk
-
-    selected_date = [None]
-    root = tk.Tk()
-    root.title(prompt.strip())
-    root.resizable(False, False)
-    root.attributes("-topmost", True)
-    root.lift()
-    root.focus_force()
-
-    root.update_idletasks()
-    width, height = 300, 320
-    pos_x = (root.winfo_screenwidth() - width) // 2
-    pos_y = (root.winfo_screenheight() - height) // 2
-    root.geometry(f"{width}x{height}+{pos_x}+{pos_y}")
-
-    now = datetime.now()
-    year_var = tk.IntVar(value=now.year)
-    month_var = tk.IntVar(value=now.month)
-
-    months_ru = [
-        "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
-        "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
-    ]
-
-    header_fr = tk.Frame(root)
-    header_fr.pack(fill="x", padx=10, pady=5)
-
-    def prev_month():
-        month, year = month_var.get(), year_var.get()
-        if month == 1:
-            month_var.set(12)
-            year_var.set(year - 1)
-        else:
-            month_var.set(month - 1)
-        draw_calendar()
-
-    def next_month():
-        month, year = month_var.get(), year_var.get()
-        if month == 12:
-            month_var.set(1)
-            year_var.set(year + 1)
-        else:
-            month_var.set(month + 1)
-        draw_calendar()
-
-    tk.Button(header_fr, text="◀", command=prev_month).pack(side="left")
-    label = tk.Label(header_fr, font=("Arial", 11, "bold"), width=18)
-    label.pack(side="left", expand=True)
-    tk.Button(header_fr, text="▶", command=next_month).pack(side="right")
-
-    cal_frame = tk.Frame(root)
-    cal_frame.pack(padx=10)
-
-    for idx, day_name in enumerate(["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]):
-        tk.Label(
-            cal_frame,
-            text=day_name,
-            width=3,
-            font=("Arial", 9, "bold"),
-            fg="#555",
-        ).grid(row=0, column=idx, pady=2)
-
-    day_buttons = []
-
-    def draw_calendar():
-        for button in day_buttons:
-            button.destroy()
-        day_buttons.clear()
-
-        year, month = year_var.get(), month_var.get()
-        label.config(text=f"{months_ru[month - 1]} {year}")
-        weeks = cal_mod.monthcalendar(year, month)
-
-        for row_idx, week in enumerate(weeks, start=1):
-            for col_idx, day_number in enumerate(week):
-                if day_number == 0:
-                    continue
-                button = tk.Button(
-                    cal_frame,
-                    text=str(day_number),
-                    width=3,
-                    relief="flat",
-                    font=("Arial", 10),
-                    command=lambda day_value=day_number: pick(day_value),
-                )
-                button.grid(row=row_idx, column=col_idx, padx=1, pady=1)
-                day_buttons.append(button)
-
-    def pick(day_number):
-        selected_date[0] = date(year_var.get(), month_var.get(), day_number)
-        root.destroy()
-
-    draw_calendar()
-    tk.Label(
-        root, text=prompt, font=("Arial", 9), fg="#333", wraplength=280
-    ).pack(pady=(8, 2))
-    root.grab_set()
-    root.mainloop()
-
-    if selected_date[0] is None:
-        print("Дата не выбрана, выход.")
-        raise SystemExit
-    return selected_date[0]
-
+# --- ИНТЕРФЕЙС STREAMLIT ---
 
 def main():
-    print("=== Анализ применения МП Инспектор по федеральным округам ===")
-    excel_file = pick_excel_file()
-    print(f"Выбран файл: {excel_file}")
+    st.set_page_config(page_title="Анализ МП Инспектор", layout="wide")
+    st.title("📊 Анализ применения МП Инспектор по федеральным округам")
 
-    try:
-        data, col_idx = load_data(excel_file)
-    except Exception as exc:
-        print(f"Ошибка при загрузке данных: {exc}")
-        input("Нажмите Enter для выхода...")
-        return
+    # 1. Загрузка файла
+    uploaded_file = st.file_uploader("Загрузите файл выгрузки (.xlsx)", type=["xlsx", "xlsm"])
+    
+    if uploaded_file is not None:
+        st.success("Файл загружен!")
+        with st.spinner("Обработка данных..."):
+            data, col_idx = load_data(uploaded_file)
+            
+            if data is None:
+                st.stop()
 
-    selected_date = get_date_from_user("Выберите дату отчёта:")
-    year_start = date(selected_date.year, 1, 1)
-    week_start = selected_date - timedelta(days=6)
+            st.write(f"✅ Загружено строк: {len(data)}")
 
-    print(
-        f"\nПериод с начала года: {year_start.strftime('%d.%m.%Y')} - {selected_date.strftime('%d.%m.%Y')}"
-    )
-    ytd_data, ytd_out, ytd_invalid = filter_by_date(
-        data, col_idx, year_start, selected_date
-    )
-    print(f"  Строк в периоде           : {len(ytd_data)}")
-    print(f"  Строк вне периода         : {ytd_out}")
-    print(f"  Строк с нераспозн. датой  : {ytd_invalid}")
+            # 2. Выбор даты
+            col1, col2 = st.columns(2)
+            with col1:
+                selected_date = st.date_input("Дата отчёта:", value=datetime.now().date())
+            
+            year_start = date(selected_date.year, 1, 1)
+            week_start = selected_date - timedelta(days=6)
 
-    print(
-        f"\nПериод за прошедшую неделю: {week_start.strftime('%d.%m.%Y')} - {selected_date.strftime('%d.%m.%Y')}"
-    )
-    week_data, week_out, week_invalid = filter_by_date(
-        data, col_idx, week_start, selected_date
-    )
-    print(f"  Строк в периоде           : {len(week_data)}")
-    print(f"  Строк вне периода         : {week_out}")
-    print(f"  Строк с нераспозн. датой  : {week_invalid}")
+            with col2:
+                st.info(f"Период с начала года: {year_start} - {selected_date}")
+                st.info(f"Период за неделю: {week_start} - {selected_date}")
 
-    print("\nРасчёт показателей...")
-    metrics_year = calculate_metrics_by_subject(ytd_data, col_idx)
-    metrics_week = calculate_metrics_by_subject(week_data, col_idx)
+            # 3. Фильтрация и расчет
+            ytd_data, ytd_out, ytd_invalid = filter_by_date(data, col_idx, year_start, selected_date)
+            week_data, week_out, week_invalid = filter_by_date(data, col_idx, week_start, selected_date)
 
-    district_rows = []
-    for short_name, full_name, subjects in DISTRICTS:
-        rows = make_subject_rows(subjects, metrics_year, metrics_week)
-        district_rows.append((short_name, full_name, rows))
+            metrics_year = calculate_metrics_by_subject(ytd_data, col_idx)
+            metrics_week = calculate_metrics_by_subject(week_data, col_idx)
 
-    print("Формирование итогового Excel-файла...")
-    try:
-        save_report(RESULT_FILE, district_rows, selected_date, week_start)
-    except Exception as exc:
-        import traceback
+            district_rows = []
+            for short_name, full_name, subjects in DISTRICTS:
+                rows = make_subject_rows(subjects, metrics_year, metrics_week)
+                district_rows.append((short_name, full_name, rows))
 
-        print(f"Ошибка при сохранении: {exc}")
-        traceback.print_exc()
-        return
-
-    print("\nПрограмма завершена.")
-
+            # 4. Генерация и скачивание
+            try:
+                output_buffer = generate_report(district_rows, selected_date, week_start)
+                filename = f"итоги_фо_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                
+                st.download_button(
+                    label="📥 Скачать итоговый отчёт (Excel)",
+                    data=output_buffer,
+                    file_name=filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                st.success("Отчёт сформирован! Нажмите кнопку выше для скачивания.")
+            except Exception as e:
+                st.error(f"Ошибка при формировании отчёта: {e}")
+    else:
+        st.info("Пожалуйста, загрузите файл Excel для начала работы.")
 
 if __name__ == "__main__":
     main()
