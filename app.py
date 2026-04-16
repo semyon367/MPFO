@@ -1,135 +1,165 @@
-import io
+import os
 import re
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 
 import openpyxl
-import streamlit as st
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.styles.borders import Border, Side
+from openpyxl.utils import get_column_letter
 
-st.set_page_config(page_title="МП Инспектор — Итоги по ФО", page_icon="📊", layout="wide")
-
-# ================== Конфигурация ==================
 SHEET_NAME = "Детализация МП Инспектор"
+RESULT_FILE = f"итоги_фо_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
 
 COLUMN_KEYWORDS = {
-    "subjekt":      ["субъект рф"],
-    "podrazd":      ["подразделение"],
-    "vid_nadzora":  ["вид надзора"],
-    "nom_knm":      ["номер кнм"],
-    "vid":          ["вид"],
-    "status":       ["статус кнм"],
-    "narusheniya":  ["нарушения выявлены"],
+    "subjekt": ["субъект рф"],
+    "podrazd": ["подразделение"],
+    "vid_nadzora": ["вид надзора"],
+    "nom_knm": ["номер кнм"],
+    "vid": ["вид"],
+    "status": ["статус кнм"],
+    "narusheniya": ["нарушения выявлены"],
     "proverka_ogv": ["проверка огв/омсу"],
-    "knd":          ["кнд"],
-    "ssylki":       ["ссылки на файлы"],
-    "date_act":     ["дата составления акта о результате кнм", "дата составления акта"],
-    "s_vks":        ["с вкс", "вкс"],
+    "knd": ["кнд"],
+    "ssylki": ["ссылки на файлы"],
+    "date_act": ["дата составления акта о результате кнм", "дата составления акта"],
+    "s_vks": ["с вкс", "вкс"],
 }
 
 DISTRICTS = [
-    ("ЦФО", "Центральный ФО", [
-        "УНДиПР ГУ МЧС России по Тверской области",
-        "УНДиПР ГУ МЧС России по Курской области",
-        "УНДиПР ГУ МЧС России по г. Москве",
-        "УНДиПР ГУ МЧС России по Московской области",
-        "УНДиПР ГУ МЧС России по Владимирской области",
-        "УНДиПР ГУ МЧС России по Тамбовской области",
-        "УНДиПР ГУ МЧС России по Тульской области",
-        "УНДиПР ГУ МЧС России по Липецкой области",
-        "УНДиПР ГУ МЧС России по Рязанской области",
-        "УНДиПР ГУ МЧС России по Костромской области",
-        "УНДиПР ГУ МЧС России по Ярославской области",
-        "УНДиПР ГУ МЧС России по Ивановской области",
-        "УНДиПР ГУ МЧС России по Воронежской области",
-        "УНДиПР ГУ МЧС России по Калужской области",
-        "УНДиПР ГУ МЧС России по Белгородской области",
-        "УНДиПР ГУ МЧС России по Брянской области",
-        "УНДиПР ГУ МЧС России по Смоленской области",
-        "УНДПР ГУ МЧС России по Орловской области",
-    ]),
-    ("СЗФО", "Северо-Западный ФО", [
-        "УНДПР Главного управления МЧС России по г. Санкт-Петербургу",
-        "УНДиПР ГУ МЧС России по Ленинградской области",
-        "УНДиПР ГУ МЧС России по Калининградской области",
-        "УНДиПР ГУ МЧС России по Псковской области",
-        "УНДиПР ГУ МЧС России по Республике Коми",
-        "УНДиПР ГУ МЧС России по Архангельской области",
-        "УНДиПР ГУ МЧС России по Вологодской области",
-        "УНДиПР ГУ МЧС России по Новгородской области",
-        "УНДиПР ГУ МЧС России по Республике Карелия",
-        "УНДиПР ГУ МЧС России по Мурманской области",
-        "ОНДиПР ГУ МЧС России по Ненецкому автономному округу",
-    ]),
-    ("СКФО", "Северо-Кавказский ФО", [
-        "УНДиПР ГУ МЧС России по Кабардино-Балкарской Республике",
-        "УНДиПР ГУ МЧС России по Республике Северная Осетия - Алания",
-        "УНДиПР ГУ МЧС России по Республике Дагестан",
-        "УНДиПР ГУ МЧС России по Карачаево-Черкесской Республике",
-        "УНДиПР ГУ МЧС России по Ставропольскому краю",
-        "УНДиПР ГУ МЧС России по Республике Ингушетия",
-        "УНДиПР ГУ МЧС России по Чеченской Республике",
-    ]),
-    ("ЮФО", "Южный ФО", [
-        "УНДиПР ГУ МЧС России по г. Севастополю",
-        "УНДиПР ГУ МЧС России по Волгоградской области",
-        "УНДиПР ГУ МЧС России по Ростовской области",
-        "УНДиПР ГУ МЧС России по Республике Адыгея",
-        "УНДиПР ГУ МЧС России по Астраханской области",
-        "УНДиПР ГУ МЧС России по Республике Крым",
-        "УНДиПР ГУ МЧС России по Республике Калмыкия",
-        "УНДиПР ГУ МЧС России по Краснодарскому краю",
-    ]),
-    ("ПФО", "Приволжский ФО", [
-        "УНДиПР ГУ МЧС России по Пензенской области",
-        "УНДиПР ГУ МЧС России по Оренбургской области",
-        "УНДиПР ГУ МЧС России по Ульяновской области",
-        "УНДиПР ГУ МЧС России по Республике Башкортостан",
-        "УНДиПР ГУ МЧС России по Удмуртской Республике",
-        "УНДиПР ГУ МЧС России по Самарской области",
-        "УНДиПР ГУ МЧС России по Нижегородской области",
-        "УНДиПР ГУ МЧС России по Кировской области",
-        "УНДиПР ГУ МЧС России по Пермскому краю",
-        "УНДиПР ГУ МЧС России по Саратовской области",
-        "УНДиПР ГУ МЧС России по Республике Мордовия",
-        "УНДиПР ГУ МЧС России по Чувашской Республике - Чувашии",
-        "УНДиПР Главного управления МЧС России по Республике Марий Эл",
-        "УНДиПР ГУ МЧС России по Республике Татарстан",
-    ]),
-    ("ДФО", "Дальневосточный ФО", [
-        "УНДиПР ГУ МЧС России по Чукотскому АО",
-        "УНДиПР ГУ МЧС России по Забайкальскому краю",
-        "УНДиПР ГУ МЧС России по Сахалинской области",
-        "УНДиПР ГУ МЧС России по Приморскому краю",
-        "УНДиПР ГУ МЧС России по Еврейской АО",
-        "УНДиПР ГУ МЧС России по Камчатскому краю",
-        "УНДиПР ГУ МЧС России по Республике Саха (Якутия)",
-        "УНДиПР Главного управления МЧС России по Республике Бурятия",
-        "УНДиПР ГУ МЧС России по Хабаровскому краю",
-        "УНДиПР ГУ МЧС России по Магаданской области",
-        "УНДиПР ГУ МЧС России по Амурской области",
-    ]),
-    ("СФО", "Сибирский ФО", [
-        "УНДиПР ГУ МЧС России по Республике Тыва",
-        "УНДиПР ГУ МЧС России по Новосибирской области",
-        "УНДиПР ГУ МЧС России по Кемеровской области - Кузбассу",
-        "УНДиПР ГУ МЧС России по Красноярскому краю",
-        "УНДиПР ГУ МЧС России по Томской области",
-        "УНДиПР ГУ МЧС России по Республике Алтай",
-        "УНДиПР ГУ МЧС России по Омской области",
-        "УНДиПР ГУ МЧС России по Республике Хакасия",
-        "УНДиПР ГУ МЧС России по Алтайскому краю",
-        "УНДиПР ГУ МЧС России по Иркутской области",
-    ]),
-    ("УФО", "Уральский ФО", [
-        "УНДиПР ГУ МЧС России по Курганской области",
-        "УНДиПР ГУ МЧС России по Свердловской области",
-        "УНДиПР ГУ МЧС России по Челябинской области",
-        "УНДиПР ГУ МЧС России по Ямало-Ненецкому АО",
-        "УНДиПР ГУ МЧС России по Ханты-Мансийскому АО - Югре",
-        "УНДиПР ГУ МЧС России по Тюменской области",
-    ]),
+    (
+        "ЦФО",
+        "Центральный ФО",
+        [
+            "УНДиПР ГУ МЧС России по Тверской области",
+            "УНДиПР ГУ МЧС России по Курской области",
+            "УНДиПР ГУ МЧС России по г. Москве",
+            "УНДиПР ГУ МЧС России по Московской области",
+            "УНДиПР ГУ МЧС России по Владимирской области",
+            "УНДиПР ГУ МЧС России по Тамбовской области",
+            "УНДиПР ГУ МЧС России по Тульской области",
+            "УНДиПР ГУ МЧС России по Липецкой области",
+            "УНДиПР ГУ МЧС России по Рязанской области",
+            "УНДиПР ГУ МЧС России по Костромской области",
+            "УНДиПР ГУ МЧС России по Ярославской области",
+            "УНДиПР ГУ МЧС России по Ивановской области",
+            "УНДиПР ГУ МЧС России по Воронежской области",
+            "УНДиПР ГУ МЧС России по Калужской области",
+            "УНДиПР ГУ МЧС России по Белгородской области",
+            "УНДиПР ГУ МЧС России по Брянской области",
+            "УНДиПР ГУ МЧС России по Смоленской области",
+            "УНДПР ГУ МЧС России по Орловской области",
+        ],
+    ),
+    (
+        "СЗФО",
+        "Северо-Западный ФО",
+        [
+            "УНДПР Главного управления МЧС России по г. Санкт-Петербургу",
+            "УНДиПР ГУ МЧС России по Ленинградской области",
+            "УНДиПР ГУ МЧС России по Калининградской области",
+            "УНДиПР ГУ МЧС России по Псковской области",
+            "УНДиПР ГУ МЧС России по Республике Коми",
+            "УНДиПР ГУ МЧС России по Архангельской области",
+            "УНДиПР ГУ МЧС России по Вологодской области",
+            "УНДиПР ГУ МЧС России по Новгородской области",
+            "УНДиПР ГУ МЧС России по Республике Карелия",
+            "УНДиПР ГУ МЧС России по Мурманской области",
+            "ОНДиПР ГУ МЧС России по Ненецкому автономному округу",
+        ],
+    ),
+    (
+        "СКФО",
+        "Северо-Кавказский ФО",
+        [
+            "УНДиПР ГУ МЧС России по Кабардино-Балкарской Республике",
+            "УНДиПР ГУ МЧС России по Республике Северная Осетия - Алания",
+            "УНДиПР ГУ МЧС России по Республике Дагестан",
+            "УНДиПР ГУ МЧС России по Карачаево-Черкесской Республике",
+            "УНДиПР ГУ МЧС России по Ставропольскому краю",
+            "УНДиПР ГУ МЧС России по Республике Ингушетия",
+            "УНДиПР ГУ МЧС России по Чеченской Республике",
+        ],
+    ),
+    (
+        "ЮФО",
+        "Южный ФО",
+        [
+            "УНДиПР ГУ МЧС России по г. Севастополю",
+            "УНДиПР ГУ МЧС России по Волгоградской области",
+            "УНДиПР ГУ МЧС России по Ростовской области",
+            "УНДиПР ГУ МЧС России по Республике Адыгея",
+            "УНДиПР ГУ МЧС России по Астраханской области",
+            "УНДиПР ГУ МЧС России по Республике Крым",
+            "УНДиПР ГУ МЧС России по Республике Калмыкия",
+            "УНДиПР ГУ МЧС России по Краснодарскому краю",
+        ],
+    ),
+    (
+        "ПФО",
+        "Приволжский ФО",
+        [
+            "УНДиПР ГУ МЧС России по Пензенской области",
+            "УНДиПР ГУ МЧС России по Оренбургской области",
+            "УНДиПР ГУ МЧС России по Ульяновской области",
+            "УНДиПР ГУ МЧС России по Республике Башкортостан",
+            "УНДиПР ГУ МЧС России по Удмуртской Республике",
+            "УНДиПР ГУ МЧС России по Самарской области",
+            "УНДиПР ГУ МЧС России по Нижегородской области",
+            "УНДиПР ГУ МЧС России по Кировской области",
+            "УНДиПР ГУ МЧС России по Пермскому краю",
+            "УНДиПР ГУ МЧС России по Саратовской области",
+            "УНДиПР ГУ МЧС России по Республике Мордовия",
+            "УНДиПР ГУ МЧС России по Чувашской Республике - Чувашии",
+            "УНДиПР Главного управления МЧС России по Республике Марий Эл",
+            "УНДиПР ГУ МЧС России по Республике Татарстан",
+        ],
+    ),
+    (
+        "ДФО",
+        "Дальневосточный ФО",
+        [
+            "УНДиПР ГУ МЧС России по Чукотскому АО",
+            "УНДиПР ГУ МЧС России по Забайкальскому краю",
+            "УНДиПР ГУ МЧС России по Сахалинской области",
+            "УНДиПР ГУ МЧС России по Приморскому краю",
+            "УНДиПР ГУ МЧС России по Еврейской АО",
+            "УНДиПР ГУ МЧС России по Камчатскому краю",
+            "УНДиПР ГУ МЧС России по Республике Саха (Якутия)",
+            "УНДиПР Главного управления МЧС России по Республике Бурятия",
+            "УНДиПР ГУ МЧС России по Хабаровскому краю",
+            "УНДиПР ГУ МЧС России по Магаданской области",
+            "УНДиПР ГУ МЧС России по Амурской области",
+        ],
+    ),
+    (
+        "СФО",
+        "Сибирский ФО",
+        [
+            "УНДиПР ГУ МЧС России по Республике Тыва",
+            "УНДиПР ГУ МЧС России по Новосибирской области",
+            "УНДиПР ГУ МЧС России по Кемеровской области - Кузбассу",
+            "УНДиПР ГУ МЧС России по Красноярскому краю",
+            "УНДиПР ГУ МЧС России по Томской области",
+            "УНДиПР ГУ МЧС России по Республике Алтай",
+            "УНДиПР ГУ МЧС России по Омской области",
+            "УНДиПР ГУ МЧС России по Республике Хакасия",
+            "УНДиПР ГУ МЧС России по Алтайскому краю",
+            "УНДиПР ГУ МЧС России по Иркутской области",
+        ],
+    ),
+    (
+        "УФО",
+        "Уральский ФО",
+        [
+            "УНДиПР ГУ МЧС России по Курганской области",
+            "УНДиПР ГУ МЧС России по Свердловской области",
+            "УНДиПР ГУ МЧС России по Челябинской области",
+            "УНДиПР ГУ МЧС России по Ямало-Ненецкому АО",
+            "УНДиПР ГУ МЧС России по Ханты-Мансийскому АО - Югре",
+            "УНДиПР ГУ МЧС России по Тюменской области",
+        ],
+    ),
 ]
 
 NEW_REGIONS = [
@@ -141,13 +171,8 @@ NEW_REGIONS = [
 
 ALL_SUBJECTS = {subject for _, _, subjects in DISTRICTS for subject in subjects}
 ALL_SUBJECTS.update(NEW_REGIONS)
-CANONICAL_SUBJECTS = {
-    re.sub(r"\s+", " ", subject.strip()).lower(): subject
-    for subject in ALL_SUBJECTS
-}
+CANONICAL_SUBJECTS = {normalize_key: subject for subject in ALL_SUBJECTS for normalize_key in [re.sub(r"\s+", " ", subject.strip()).lower()]}
 
-
-# ================== Вспомогательные функции ==================
 
 def normalize_str(value):
     if value is None:
@@ -156,15 +181,18 @@ def normalize_str(value):
 
 
 def find_column_index(headers, possible_names):
-    headers_norm = [normalize_str(h) for h in headers]
-    possible_norm = [normalize_str(n) for n in possible_names]
+    headers_norm = [normalize_str(header) for header in headers]
+    possible_norm = [normalize_str(name) for name in possible_names]
+
     for idx, norm in enumerate(headers_norm):
         if norm in possible_norm:
             return idx
+
     for idx, norm in enumerate(headers_norm):
-        for pname in possible_norm:
-            if pname in norm:
+        for possible_name in possible_norm:
+            if possible_name in norm:
                 return idx
+
     return None
 
 
@@ -185,18 +213,19 @@ def parse_date(value):
     return None
 
 
-def load_data(file_bytes):
-    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+def load_data(excel_file):
+    print(f"Загрузка файла {excel_file}, лист '{SHEET_NAME}'...")
+    if not os.path.exists(excel_file):
+        raise FileNotFoundError(f"Файл {excel_file} не найден.")
+
+    wb = openpyxl.load_workbook(excel_file, data_only=True)
     if SHEET_NAME not in wb.sheetnames:
-        raise ValueError(
-            f"Лист «{SHEET_NAME}» не найден.\n"
-            f"Доступные листы: {', '.join(wb.sheetnames)}"
-        )
+        raise ValueError(f"Лист '{SHEET_NAME}' не найден.")
+
     ws = wb[SHEET_NAME]
     headers = [cell.value if cell.value else "" for cell in ws[1]]
 
     col_indices = {}
-    warnings_ = []
     missing = []
 
     for key, possible_names in COLUMN_KEYWORDS.items():
@@ -204,49 +233,55 @@ def load_data(file_bytes):
         if idx is None:
             if key == "podrazd" and len(headers) > 17:
                 idx = 17
-                warnings_.append("Столбец «подразделение» не найден по имени — используем позицию 18 (индекс 17)")
+                print("  [!] Столбец 'podrazd' не найден по имени — используем позицию 18 (индекс 17)")
             else:
-                missing.append(f"«{key}» (искали: {possible_names})")
+                missing.append(f"  • '{key}' (искали: {possible_names})")
+        else:
+            print(f"  Столбец '{key}' → '{headers[idx]}' (индекс {idx})")
         col_indices[key] = idx
 
     if missing:
-        raise ValueError("Не найдены обязательные столбцы:\n• " + "\n• ".join(missing))
+        raise ValueError("Не найдены обязательные столбцы:\n" + "\n".join(missing))
 
     data = [
         row for row in ws.iter_rows(min_row=2, values_only=True)
         if not all(cell is None for cell in row)
     ]
-    return data, col_indices, warnings_
+    print(f"Загружено строк: {len(data)}")
+    return data, col_indices
 
 
 def filter_by_date(data, col_idx, date_from, date_to):
     date_col = col_idx["date_act"]
     filtered = []
-    skipped_out = 0
-    skipped_inv = 0
+    skipped_out_of_range = 0
+    skipped_invalid_date = 0
+
     for row in data:
         parsed = parse_date(row[date_col])
         if parsed is None:
-            skipped_inv += 1
+            skipped_invalid_date += 1
             continue
         if date_from <= parsed <= date_to:
             filtered.append(row)
         else:
-            skipped_out += 1
-    return filtered, skipped_out, skipped_inv
+            skipped_out_of_range += 1
+
+    return filtered, skipped_out_of_range, skipped_invalid_date
 
 
 def calculate_metrics_by_subject(data, col_idx):
-    subj_col        = col_idx["subjekt"]
-    knm_col         = col_idx["nom_knm"]
-    vid_col         = col_idx["vid"]
-    status_col      = col_idx["status"]
-    proverka_col    = col_idx["proverka_ogv"]
+    subj_col = col_idx["subjekt"]
+    podrazd_col = col_idx["podrazd"]
+    knm_col = col_idx["nom_knm"]
+    vid_col = col_idx["vid"]
+    status_col = col_idx["status"]
+    proverka_col = col_idx["proverka_ogv"]
     vid_nadzora_col = col_idx["vid_nadzora"]
-    knd_col         = col_idx["knd"]
-    nar_col         = col_idx["narusheniya"]
-    vks_col         = col_idx["s_vks"]
-    ssylki_col      = col_idx["ssylki"]
+    knd_col = col_idx["knd"]
+    nar_col = col_idx["narusheniya"]
+    vks_col = col_idx["s_vks"]
+    ssylki_col = col_idx["ssylki"]
 
     allowed_vids = {"", "выездная проверка", "рейдовый осмотр", "инспекционный визит"}
     knm_info = {}
@@ -260,7 +295,7 @@ def calculate_metrics_by_subject(data, col_idx):
         if normalize_str(row[vid_nadzora_col]) == "гнго":
             reasons_base.append("vid_nadzora")
 
-        subject_raw  = str(row[subj_col]).strip() if row[subj_col] else ""
+        subject_raw = str(row[subj_col]).strip() if row[subj_col] else ""
         subject_name = CANONICAL_SUBJECTS.get(normalize_str(subject_raw), "")
         knm = row[knm_col]
         if not row[subj_col] or not knm:
@@ -269,20 +304,20 @@ def calculate_metrics_by_subject(data, col_idx):
         if reasons_base or subject_name not in ALL_SUBJECTS:
             continue
 
-        vid_val   = normalize_str(row[vid_col])  if row[vid_col]  else ""
-        knd_str   = normalize_str(row[knd_col])  if row[knd_col]  else ""
-        nar_str   = normalize_str(row[nar_col])  if row[nar_col]  else ""
-        vks_str   = normalize_str(row[vks_col])  if row[vks_col]  else ""
+        vid_val = normalize_str(row[vid_col]) if row[vid_col] else ""
+        knd_str = normalize_str(row[knd_col]) if row[knd_col] else ""
+        nar_str = normalize_str(row[nar_col]) if row[nar_col] else ""
+        vks_str = normalize_str(row[vks_col]) if row[vks_col] else ""
         ssylki_ok = row[ssylki_col] is not None and str(row[ssylki_col]).strip() != ""
 
         if knm not in knm_info:
             knm_info[knm] = {
-                "subject":   subject_name,
+                "subject": subject_name,
                 "vks_denom": False,
-                "vks_num":   False,
+                "vks_num": False,
                 "och_denom": False,
-                "och_num":   False,
-                "och_nar":   False,
+                "och_num": False,
+                "och_nar": False,
             }
 
         info = knm_info[knm]
@@ -299,13 +334,19 @@ def calculate_metrics_by_subject(data, col_idx):
                 info["och_nar"] = True
 
     metrics = defaultdict(lambda: [set(), set(), set(), set(), set()])
+
     for knm, info in knm_info.items():
         subject = info["subject"]
-        if info["vks_denom"]: metrics[subject][0].add(knm)
-        if info["vks_num"]:   metrics[subject][1].add(knm)
-        if info["och_denom"]: metrics[subject][2].add(knm)
-        if info["och_num"]:   metrics[subject][3].add(knm)
-        if info["och_nar"]:   metrics[subject][4].add(knm)
+        if info["vks_denom"]:
+            metrics[subject][0].add(knm)
+        if info["vks_num"]:
+            metrics[subject][1].add(knm)
+        if info["och_denom"]:
+            metrics[subject][2].add(knm)
+        if info["och_num"]:
+            metrics[subject][3].add(knm)
+        if info["och_nar"]:
+            metrics[subject][4].add(knm)
 
     return metrics
 
@@ -313,21 +354,23 @@ def calculate_metrics_by_subject(data, col_idx):
 def make_subject_rows(subjects, metrics_year, metrics_week):
     rows = []
     for subject in subjects:
-        y = metrics_year.get(subject, [set(), set(), set(), set(), set()])
-        w = metrics_week.get(subject, [set(), set(), set(), set(), set()])
-        rows.append({
-            "subject":        subject,
-            "vks_total_year": len(y[0]),
-            "vks_mp_year":    len(y[1]),
-            "vks_total_week": len(w[0]),
-            "vks_mp_week":    len(w[1]),
-            "och_total_year": len(y[2]),
-            "och_mp_year":    len(y[3]),
-            "och_nar_year":   len(y[4]),
-            "och_total_week": len(w[2]),
-            "och_mp_week":    len(w[3]),
-            "och_nar_week":   len(w[4]),
-        })
+        year_sets = metrics_year.get(subject, [set(), set(), set(), set(), set()])
+        week_sets = metrics_week.get(subject, [set(), set(), set(), set(), set()])
+        rows.append(
+            {
+                "subject": subject,
+                "vks_total_year": len(year_sets[0]),
+                "vks_mp_year": len(year_sets[1]),
+                "vks_total_week": len(week_sets[0]),
+                "vks_mp_week": len(week_sets[1]),
+                "och_total_year": len(year_sets[2]),
+                "och_mp_year": len(year_sets[3]),
+                "och_nar_year": len(year_sets[4]),
+                "och_total_week": len(week_sets[2]),
+                "och_mp_week": len(week_sets[3]),
+                "och_nar_week": len(week_sets[4]),
+            }
+        )
     return rows
 
 
@@ -340,22 +383,44 @@ def fmt_och(total, nar):
     return f"{total} ({nar})"
 
 
-def build_excel(district_rows, selected_date, week_start):
+def auto_adjust_row_heights(ws, start_row, end_row):
+    col_a_width = ws.column_dimensions["A"].width or 60
+    
+    for row_idx in range(start_row, end_row + 1):
+        max_lines = 1
+        cell = ws.cell(row_idx, 1)
+        
+        if cell.value:
+            text = str(cell.value)
+            chars_per_line = int(col_a_width * 1.2)
+            lines = len(text) / chars_per_line if chars_per_line > 0 else 1
+            max_lines = max(1, int(lines) + 1)
+        
+        row_height = max_lines * 15
+        row_height = min(row_height, 60)
+        row_height = max(row_height, 20)
+        
+        ws.row_dimensions[row_idx].height = row_height
+
+
+def save_report(filename, district_rows, selected_date, week_start):
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
-    blue_fill   = PatternFill("solid", start_color="4472C4", end_color="4472C4")
+    blue_fill = PatternFill("solid", start_color="4472C4", end_color="4472C4")
+    green_fill = PatternFill("solid", start_color="00FF00", end_color="00FF00")
     yellow_fill = PatternFill("solid", start_color="FFFF00", end_color="FFFF00")
-    red_fill    = PatternFill("solid", start_color="FF0000", end_color="FF0000")
-    thin   = Side(style="thin", color="BFBFBF")
+    red_fill = PatternFill("solid", start_color="FF0000", end_color="FF0000")
+
+    thin = Side(style="thin", color="BFBFBF")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
     def style_header_row(ws, row_num):
         for cell in ws[row_num]:
-            cell.fill      = blue_fill
-            cell.font      = Font(bold=True, color="FFFFFF", name="Arial", size=10)
+            cell.fill = blue_fill
+            cell.font = Font(bold=True, color="FFFFFF", name="Arial", size=10)
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            cell.border    = border
+            cell.border = border
 
     for sheet_name, district_name, rows in district_rows:
         ws = wb.create_sheet(title=sheet_name)
@@ -365,60 +430,148 @@ def build_excel(district_rows, selected_date, week_start):
         ws.merge_cells("B1:E1")
         ws.merge_cells("F1:I1")
 
-        ws.append([
-            "",
-            "Всего в ААС КНД с начала года",
-            "Всего в МП Инспектор с начала года",
-            "Всего в ААС КНД за прошедшую неделю",
-            "Всего в МП Инспектор за прошедшую неделю",
-            "Всего в ААС КНД с начала года (из них с нарушениями)",
-            "Всего в МП Инспектор с начала года",
-            "Всего в ААС КНД за прошедшую неделю (из них с нарушениями)",
-            "Всего в МП Инспектор за прошедшую неделю",
-        ])
+        ws.append(
+            [
+                "",
+                "Всего в ААС КНД с начала года",
+                "Всего в МП Инспектор с начала года",
+                "Всего в ААС КНД за прошедшую неделю",
+                "Всего в МП Инспектор за прошедшую неделю",
+                "Всего в ААС КНД с начала года (из них с нарушениями)",
+                "Всего в МП Инспектор с начала года",
+                "Всего в ААС КНД за прошедшую неделю (из них с нарушениями)",
+                "Всего в МП Инспектор за прошедшую неделю",
+            ]
+        )
 
         style_header_row(ws, 1)
         style_header_row(ws, 2)
         ws.row_dimensions[1].height = 24
-        ws.row_dimensions[2].height = 42
+        ws.row_dimensions[2].height = 60
 
         ws.append([district_name, "", "", "", "", "", "", "", ""])
         ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=9)
         district_cell = ws.cell(3, 1)
-        district_cell.font      = Font(bold=True, name="Arial", size=10)
+        district_cell.font = Font(bold=True, name="Arial", size=10)
         district_cell.alignment = Alignment(horizontal="center", vertical="center")
 
-        for row_data in rows:
-            ws.append([
-                row_data["subject"],
-                row_data["vks_total_year"],
-                fmt_ratio(row_data["vks_mp_year"],  row_data["vks_total_year"]),
-                row_data["vks_total_week"],
-                fmt_ratio(row_data["vks_mp_week"],  row_data["vks_total_week"]),
-                fmt_och(row_data["och_total_year"], row_data["och_nar_year"]),
-                fmt_ratio(row_data["och_mp_year"],  row_data["och_total_year"]),
-                fmt_och(row_data["och_total_week"], row_data["och_nar_week"]),
-                fmt_ratio(row_data["och_mp_week"],  row_data["och_total_week"]),
-            ])
+        def get_och_ratio(row):
+            if row["och_total_year"] > 0:
+                return row["och_mp_year"] / row["och_total_year"]
+            return 0.0
+        
+        sorted_rows = sorted(rows, key=get_och_ratio)
 
-        tv_y  = sum(r["vks_total_year"] for r in rows)
-        tvmp_y= sum(r["vks_mp_year"]    for r in rows)
-        tv_w  = sum(r["vks_total_week"] for r in rows)
-        tvmp_w= sum(r["vks_mp_week"]    for r in rows)
-        to_y  = sum(r["och_total_year"] for r in rows)
-        tomp_y= sum(r["och_mp_year"]    for r in rows)
-        tn_y  = sum(r["och_nar_year"]   for r in rows)
-        to_w  = sum(r["och_total_week"] for r in rows)
-        tomp_w= sum(r["och_mp_week"]    for r in rows)
-        tn_w  = sum(r["och_nar_week"]   for r in rows)
+        start_row = 4
+        for row_idx, row_data in enumerate(sorted_rows, start=start_row):
+            ws.append(
+                [
+                    row_data["subject"],
+                    row_data["vks_total_year"],
+                    fmt_ratio(row_data["vks_mp_year"], row_data["vks_total_year"]),
+                    row_data["vks_total_week"],
+                    fmt_ratio(row_data["vks_mp_week"], row_data["vks_total_week"]),
+                    fmt_och(row_data["och_total_year"], row_data["och_nar_year"]),
+                    fmt_ratio(row_data["och_mp_year"], row_data["och_total_year"]),
+                    fmt_och(row_data["och_total_week"], row_data["och_nar_week"]),
+                    fmt_ratio(row_data["och_mp_week"], row_data["och_total_week"]),
+                ]
+            )
 
-        ws.append([
-            f"Итого за {district_name}",
-            tv_y,  fmt_ratio(tvmp_y, tv_y),
-            tv_w,  fmt_ratio(tvmp_w, tv_w),
-            fmt_och(to_y, tn_y), fmt_ratio(tomp_y, to_y),
-            fmt_och(to_w, tn_w), fmt_ratio(tomp_w, to_w),
-        ])
+            # --- Color Logic ---
+            vks_total_y = row_data["vks_total_year"]
+            vks_mp_y = row_data["vks_mp_year"]
+            och_total_y = row_data["och_total_year"]
+            och_mp_y = row_data["och_mp_year"]
+
+            vks_total_w = row_data["vks_total_week"]
+            vks_mp_w = row_data["vks_mp_week"]
+            och_total_w = row_data["och_total_week"]
+            och_mp_w = row_data["och_mp_week"]
+
+            vks_ratio_y = (vks_mp_y / vks_total_y) if vks_total_y > 0 else 0.0
+            och_ratio_y = (och_mp_y / och_total_y) if och_total_y > 0 else 0.0
+            vks_ratio_w = (vks_mp_w / vks_total_w) if vks_total_w > 0 else 0.0
+            och_ratio_w = (och_mp_w / och_total_w) if och_total_w > 0 else 0.0
+
+            # Условия по годам
+            year_vks_ok = vks_ratio_y > 0.10
+            year_och_ok = och_ratio_y > 0.80
+            year_both_ok = year_vks_ok and year_och_ok
+            
+            # Условия по неделе
+            week_vks_ok = vks_ratio_w >= 0.10
+            week_och_ok = och_ratio_w >= 0.80
+            week_both_ok = week_vks_ok and week_och_ok
+            
+            # --- Зелёный: столбец A (субъект) ---
+            cell_a = ws.cell(row_idx, 1)
+            cell_a.border = border
+            cell_a.font = Font(name="Arial", size=10)
+            cell_a.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+            if year_both_ok:
+                cell_a.fill = green_fill
+            
+            # --- Жёлтый: столбцы C и G (с начала года) ---
+            # Столбец C (ВКС год %) - если ВКС < 10%
+            cell_c = ws.cell(row_idx, 3)
+            cell_c.border = border
+            cell_c.font = Font(name="Arial", size=10)
+            cell_c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            if not year_vks_ok:
+                cell_c.fill = yellow_fill
+            
+            # Столбец G (Очные год %) - если Очные < 80%
+            cell_g = ws.cell(row_idx, 7)
+            cell_g.border = border
+            cell_g.font = Font(name="Arial", size=10)
+            cell_g.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            if not year_och_ok:
+                cell_g.fill = yellow_fill
+            
+            # --- Красный: столбцы E и I (за неделю) ---
+            # Только если с начала года не достигнуты показатели И за неделя не выполнена
+            if not year_both_ok and not week_both_ok:
+                # Столбец E (ВКС неделя %) - если ВКС за неделю < 10%
+                cell_e = ws.cell(row_idx, 5)
+                cell_e.border = border
+                cell_e.font = Font(name="Arial", size=10)
+                cell_e.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                if not week_vks_ok:
+                    cell_e.fill = red_fill
+                
+                # Столбец I (Очные неделя %) - если Очные за неделю < 80%
+                cell_i = ws.cell(row_idx, 9)
+                cell_i.border = border
+                cell_i.font = Font(name="Arial", size=10)
+                cell_i.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                if not week_och_ok:
+                    cell_i.fill = red_fill
+
+        total_vks_year = sum(row["vks_total_year"] for row in rows)
+        total_vks_mp_year = sum(row["vks_mp_year"] for row in rows)
+        total_vks_week = sum(row["vks_total_week"] for row in rows)
+        total_vks_mp_week = sum(row["vks_mp_week"] for row in rows)
+        total_och_year = sum(row["och_total_year"] for row in rows)
+        total_och_mp_year = sum(row["och_mp_year"] for row in rows)
+        total_och_nar_year = sum(row["och_nar_year"] for row in rows)
+        total_och_week = sum(row["och_total_week"] for row in rows)
+        total_och_mp_week = sum(row["och_mp_week"] for row in rows)
+        total_och_nar_week = sum(row["och_nar_week"] for row in rows)
+
+        ws.append(
+            [
+                f"Итого за {district_name}",
+                total_vks_year,
+                fmt_ratio(total_vks_mp_year, total_vks_year),
+                total_vks_week,
+                fmt_ratio(total_vks_mp_week, total_vks_week),
+                fmt_och(total_och_year, total_och_nar_year),
+                fmt_ratio(total_och_mp_year, total_och_year),
+                fmt_och(total_och_week, total_och_nar_week),
+                fmt_ratio(total_och_mp_week, total_och_week),
+            ]
+        )
         total_row_idx = ws.max_row
 
         ws.column_dimensions["A"].width = 60.89
@@ -431,151 +584,224 @@ def build_excel(district_rows, selected_date, week_start):
         ws.column_dimensions["H"].width = 9.44
         ws.column_dimensions["I"].width = 14.33
 
+        auto_adjust_row_heights(ws, start_row, total_row_idx - 1)
+
         for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=9):
             for cell in row:
+                if isinstance(cell, openpyxl.cell.MergedCell):
+                    continue
                 cell.border = border
-                if cell.row >= 4:
+                if cell.row >= 4 and cell.row < total_row_idx:
                     if cell.column == 1:
                         cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
                     else:
                         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                elif cell.row == total_row_idx:
+                    cell.font = Font(bold=True, name="Arial", size=10)
+                    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                    if cell.column == 1:
+                        cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+                else:
+                    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+                if cell.row >= 4 and not cell.font.name:
                     cell.font = Font(name="Arial", size=10)
 
-        for row_idx, row_data in enumerate(rows, start=4):
-            if row_data["vks_total_year"] > 0 and row_data["vks_mp_year"] / row_data["vks_total_year"] < 0.10:
-                ws.cell(row_idx, 3).fill = yellow_fill
-            if row_data["vks_total_week"] > 0 and row_data["vks_mp_week"] / row_data["vks_total_week"] < 0.10:
-                ws.cell(row_idx, 5).fill = red_fill
-            if row_data["och_total_year"] > 0 and row_data["och_mp_year"] / row_data["och_total_year"] < 0.80:
-                ws.cell(row_idx, 7).fill = yellow_fill
-            if row_data["och_total_week"] > 0 and row_data["och_mp_week"] / row_data["och_total_week"] < 0.80:
-                ws.cell(row_idx, 9).fill = red_fill
-
-        for cell in ws[total_row_idx]:
-            cell.font      = Font(bold=True, name="Arial", size=10)
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        ws.cell(total_row_idx, 1).alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-
-        if tv_y  > 0 and tvmp_y / tv_y  < 0.10: ws.cell(total_row_idx, 3).fill = yellow_fill
-        if tv_w  > 0 and tvmp_w / tv_w  < 0.10: ws.cell(total_row_idx, 5).fill = red_fill
-        if to_y  > 0 and tomp_y / to_y  < 0.80: ws.cell(total_row_idx, 7).fill = yellow_fill
-        if to_w  > 0 and tomp_w / to_w  < 0.80: ws.cell(total_row_idx, 9).fill = red_fill
-
         info_row = ws.max_row + 2
-        ws.cell(info_row,     1, f"Дата отчёта: {selected_date.strftime('%d.%m.%Y')}")
-        ws.cell(info_row + 1, 1, f"Прошедшая неделя: {week_start.strftime('%d.%m.%Y')} - {selected_date.strftime('%d.%m.%Y')}")
+        ws.cell(info_row, 1, f"Дата отчёта: {selected_date.strftime('%d.%m.%Y')}")
+        ws.cell(
+            info_row + 1,
+            1,
+            f"Прошедшая неделя: {week_start.strftime('%d.%m.%Y')} - {selected_date.strftime('%d.%m.%Y')}",
+        )
 
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return buf.getvalue()
+    wb.save(filename)
+    print(f"Файл сохранён: {filename}")
 
 
-# ================== Streamlit UI ==================
+def pick_excel_file():
+    import tkinter as tk
+    from tkinter import filedialog
 
-st.title("📊 МП Инспектор — Итоги по федеральным округам")
-st.markdown("Загрузите файл выгрузки АИС КНД, выберите дату отчёта и получите готовый Excel по всем ФО.")
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    path = filedialog.askopenfilename(
+        title="Выберите файл выгрузки",
+        filetypes=[("Excel файлы", "*.xlsx *.xlsm"), ("Все файлы", "*.*")],
+    )
+    root.destroy()
+    if not path:
+        print("Файл не выбран, выход.")
+        raise SystemExit
+    return path
 
-uploaded = st.file_uploader(
-    "**Шаг 1 — Загрузите файл выгрузки (.xlsx / .xlsm)**",
-    type=["xlsx", "xlsm"],
-)
 
-if uploaded:
-    file_bytes = uploaded.read()
+def get_date_from_user(prompt):
+    import calendar as cal_mod
+    import tkinter as tk
 
-    with st.spinner("Читаем файл..."):
-        try:
-            data, col_idx, warnings_ = load_data(file_bytes)
-        except Exception as e:
-            st.error(f"Ошибка при загрузке: {e}")
-            st.stop()
+    selected_date = [None]
+    root = tk.Tk()
+    root.title(prompt.strip())
+    root.resizable(False, False)
+    root.attributes("-topmost", True)
+    root.lift()
+    root.focus_force()
 
-    for w in warnings_:
-        st.warning(f"⚠️ {w}")
+    root.update_idletasks()
+    width, height = 300, 320
+    pos_x = (root.winfo_screenwidth() - width) // 2
+    pos_y = (root.winfo_screenheight() - height) // 2
+    root.geometry(f"{width}x{height}+{pos_x}+{pos_y}")
 
-    st.success(f"✅ Файл загружен. Строк данных: **{len(data)}**")
+    now = datetime.now()
+    year_var = tk.IntVar(value=now.year)
+    month_var = tk.IntVar(value=now.month)
 
-    st.markdown("---")
-    st.markdown("**Шаг 2 — Выберите дату отчёта**")
-    st.caption("Период с начала года считается автоматически (01.01 → выбранная дата). Неделя — последние 7 дней включая выбранную дату.")
+    months_ru = [
+        "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+        "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
+    ]
 
-    selected_date = st.date_input("Дата отчёта", value=date.today())
+    header_fr = tk.Frame(root)
+    header_fr.pack(fill="x", padx=10, pady=5)
 
+    def prev_month():
+        month, year = month_var.get(), year_var.get()
+        if month == 1:
+            month_var.set(12)
+            year_var.set(year - 1)
+        else:
+            month_var.set(month - 1)
+        draw_calendar()
+
+    def next_month():
+        month, year = month_var.get(), year_var.get()
+        if month == 12:
+            month_var.set(1)
+            year_var.set(year + 1)
+        else:
+            month_var.set(month + 1)
+        draw_calendar()
+
+    tk.Button(header_fr, text="◀", command=prev_month).pack(side="left")
+    label = tk.Label(header_fr, font=("Arial", 11, "bold"), width=18)
+    label.pack(side="left", expand=True)
+    tk.Button(header_fr, text="▶", command=next_month).pack(side="right")
+
+    cal_frame = tk.Frame(root)
+    cal_frame.pack(padx=10)
+
+    for idx, day_name in enumerate(["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]):
+        tk.Label(
+            cal_frame,
+            text=day_name,
+            width=3,
+            font=("Arial", 9, "bold"),
+            fg="#555",
+        ).grid(row=0, column=idx, pady=2)
+
+    day_buttons = []
+
+    def draw_calendar():
+        for button in day_buttons:
+            button.destroy()
+        day_buttons.clear()
+
+        year, month = year_var.get(), month_var.get()
+        label.config(text=f"{months_ru[month - 1]} {year}")
+        weeks = cal_mod.monthcalendar(year, month)
+
+        for row_idx, week in enumerate(weeks, start=1):
+            for col_idx, day_number in enumerate(week):
+                if day_number == 0:
+                    continue
+                button = tk.Button(
+                    cal_frame,
+                    text=str(day_number),
+                    width=3,
+                    relief="flat",
+                    font=("Arial", 10),
+                    command=lambda day_value=day_number: pick(day_value),
+                )
+                button.grid(row=row_idx, column=col_idx, padx=1, pady=1)
+                day_buttons.append(button)
+
+    def pick(day_number):
+        selected_date[0] = date(year_var.get(), month_var.get(), day_number)
+        root.destroy()
+
+    draw_calendar()
+    tk.Label(
+        root, text=prompt, font=("Arial", 9), fg="#333", wraplength=280
+    ).pack(pady=(8, 2))
+    root.grab_set()
+    root.mainloop()
+
+    if selected_date[0] is None:
+        print("Дата не выбрана, выход.")
+        raise SystemExit
+    return selected_date[0]
+
+
+def main():
+    print("=== Анализ применения МП Инспектор по федеральным округам ===")
+    excel_file = pick_excel_file()
+    print(f"Выбран файл: {excel_file}")
+
+    try:
+        data, col_idx = load_data(excel_file)
+    except Exception as exc:
+        print(f"Ошибка при загрузке данных: {exc}")
+        input("Нажмите Enter для выхода...")
+        return
+
+    selected_date = get_date_from_user("Выберите дату отчёта:")
     year_start = date(selected_date.year, 1, 1)
     week_start = selected_date - timedelta(days=6)
 
-    st.info(
-        f"📅 Период с начала года: **{year_start.strftime('%d.%m.%Y')}** — **{selected_date.strftime('%d.%m.%Y')}**  \n"
-        f"📅 Прошедшая неделя: **{week_start.strftime('%d.%m.%Y')}** — **{selected_date.strftime('%d.%m.%Y')}**"
+    print(
+        f"\nПериод с начала года: {year_start.strftime('%d.%m.%Y')} - {selected_date.strftime('%d.%m.%Y')}"
     )
+    ytd_data, ytd_out, ytd_invalid = filter_by_date(
+        data, col_idx, year_start, selected_date
+    )
+    print(f"  Строк в периоде           : {len(ytd_data)}")
+    print(f"  Строк вне периода         : {ytd_out}")
+    print(f"  Строк с нераспозн. датой  : {ytd_invalid}")
 
-    st.markdown("---")
-    if st.button("🚀 Запустить расчёт", type="primary", use_container_width=True):
+    print(
+        f"\nПериод за прошедшую неделю: {week_start.strftime('%d.%m.%Y')} - {selected_date.strftime('%d.%m.%Y')}"
+    )
+    week_data, week_out, week_invalid = filter_by_date(
+        data, col_idx, week_start, selected_date
+    )
+    print(f"  Строк в периоде           : {len(week_data)}")
+    print(f"  Строк вне периода         : {week_out}")
+    print(f"  Строк с нераспозн. датой  : {week_invalid}")
 
-        with st.spinner("Фильтруем данные по периодам..."):
-            ytd_data,  ytd_out,  ytd_inv  = filter_by_date(data, col_idx, year_start,  selected_date)
-            week_data, week_out, week_inv = filter_by_date(data, col_idx, week_start,   selected_date)
+    print("\nРасчёт показателей...")
+    metrics_year = calculate_metrics_by_subject(ytd_data, col_idx)
+    metrics_week = calculate_metrics_by_subject(week_data, col_idx)
 
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Строк в периоде (год)",    len(ytd_data))
-            st.caption(f"Вне периода: {ytd_out} | Без даты: {ytd_inv}")
-        with col2:
-            st.metric("Строк в периоде (неделя)", len(week_data))
-            st.caption(f"Вне периода: {week_out} | Без даты: {week_inv}")
+    district_rows = []
+    for short_name, full_name, subjects in DISTRICTS:
+        rows = make_subject_rows(subjects, metrics_year, metrics_week)
+        district_rows.append((short_name, full_name, rows))
 
-        if len(ytd_data) == 0 and len(week_data) == 0:
-            st.error("Данных за оба периода нет. Проверьте файл и дату.")
-            st.stop()
+    print("Формирование итогового Excel-файла...")
+    try:
+        save_report(RESULT_FILE, district_rows, selected_date, week_start)
+    except Exception as exc:
+        import traceback
 
-        with st.spinner("Считаем показатели..."):
-            metrics_year = calculate_metrics_by_subject(ytd_data,  col_idx)
-            metrics_week = calculate_metrics_by_subject(week_data, col_idx)
+        print(f"Ошибка при сохранении: {exc}")
+        traceback.print_exc()
+        return
 
-            district_rows = [
-                (short, full, make_subject_rows(subjects, metrics_year, metrics_week))
-                for short, full, subjects in DISTRICTS
-            ]
+    print("\nПрограмма завершена.")
 
-        # Сводная таблица в интерфейсе
-        st.markdown("---")
-        st.subheader("📈 Сводка по федеральным округам")
 
-        import pandas as pd
-        summary = []
-        for short_name, full_name, rows in district_rows:
-            tv_y  = sum(r["vks_total_year"] for r in rows)
-            tvmp_y= sum(r["vks_mp_year"]    for r in rows)
-            to_y  = sum(r["och_total_year"] for r in rows)
-            tomp_y= sum(r["och_mp_year"]    for r in rows)
-            tv_w  = sum(r["vks_total_week"] for r in rows)
-            tvmp_w= sum(r["vks_mp_week"]    for r in rows)
-            to_w  = sum(r["och_total_week"] for r in rows)
-            tomp_w= sum(r["och_mp_week"]    for r in rows)
-            summary.append({
-                "ФО":                  full_name,
-                "ВКС год, всего":      tv_y,
-                "ВКС год, с МП (%)":   f"{tvmp_y} ({tvmp_y/tv_y*100:.1f}%)" if tv_y else "—",
-                "ВКС нед., всего":     tv_w,
-                "ВКС нед., с МП (%)":  f"{tvmp_w} ({tvmp_w/tv_w*100:.1f}%)" if tv_w else "—",
-                "Очные год, всего":    to_y,
-                "Очные год, с МП (%)": f"{tomp_y} ({tomp_y/to_y*100:.1f}%)" if to_y else "—",
-                "Очные нед., всего":   to_w,
-                "Очные нед., с МП (%)":f"{tomp_w} ({tomp_w/to_w*100:.1f}%)" if to_w else "—",
-            })
-        st.dataframe(pd.DataFrame(summary), use_container_width=True, hide_index=True)
-
-        with st.spinner("Формируем Excel-файл..."):
-            excel_bytes = build_excel(district_rows, selected_date, week_start)
-
-        filename = f"итоги_фо_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        st.success("✅ Готово!")
-        st.download_button(
-            label="⬇️ Скачать результат (.xlsx)",
-            data=excel_bytes,
-            file_name=filename,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
-            use_container_width=True,
-        )
+if __name__ == "__main__":
+    main()
