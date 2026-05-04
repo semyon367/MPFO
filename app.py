@@ -1,15 +1,14 @@
-import streamlit as st
 import io
 import re
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 
 import openpyxl
+import streamlit as st
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.styles.borders import Border, Side
 from openpyxl.utils import get_column_letter
 
-# --- КОНСТАНТЫ ---
 SHEET_NAME = "Детализация МП Инспектор"
 
 COLUMN_KEYWORDS = {
@@ -175,8 +174,6 @@ ALL_SUBJECTS.update(NEW_REGIONS)
 CANONICAL_SUBJECTS = {normalize_key: subject for subject in ALL_SUBJECTS for normalize_key in [re.sub(r"\s+", " ", subject.strip()).lower()]}
 
 
-# --- ФУНКЦИИ ОБРАБОТКИ ДАННЫХ ---
-
 def normalize_str(value):
     if value is None:
         return ""
@@ -216,20 +213,10 @@ def parse_date(value):
     return None
 
 
-@st.cache_data
 def load_data(uploaded_file):
-    if uploaded_file is None:
-        return None, None
-
-    try:
-        wb = openpyxl.load_workbook(uploaded_file, data_only=True)
-    except Exception as e:
-        st.error(f"Ошибка при открытии файла: {e}")
-        return None, None
-
+    wb = openpyxl.load_workbook(uploaded_file, data_only=True)
     if SHEET_NAME not in wb.sheetnames:
-        st.error(f"Лист '{SHEET_NAME}' не найден в файле.")
-        return None, None
+        raise ValueError(f"Лист '{SHEET_NAME}' не найден.")
 
     ws = wb[SHEET_NAME]
     headers = [cell.value if cell.value else "" for cell in ws[1]]
@@ -243,37 +230,26 @@ def load_data(uploaded_file):
             if key == "podrazd" and len(headers) > 17:
                 idx = 17
             else:
-                missing.append(f"'{key}' (искали: {possible_names})")
+                missing.append(f"  • '{key}' (искали: {possible_names})")
         col_indices[key] = idx
 
     if missing:
-        st.warning(f"Не найдены столбцы: {', '.join(missing)}. Некоторые функции могут не работать.")
-        # Не прерываем выполнение, чтобы попробовать обработать то, что есть
+        raise ValueError("Не найдены обязательные столбцы:\n" + "\n".join(missing))
 
     data = [
         row for row in ws.iter_rows(min_row=2, values_only=True)
         if not all(cell is None for cell in row)
     ]
-    
     return data, col_indices
 
 
 def filter_by_date(data, col_idx, date_from, date_to):
-    if "date_act" not in col_idx or col_idx["date_act"] is None:
-        st.error("Столбец с датой не найден.")
-        return [], 0, 0
-
     date_col = col_idx["date_act"]
     filtered = []
     skipped_out_of_range = 0
     skipped_invalid_date = 0
 
     for row in data:
-        # Проверка границ индекса
-        if date_col >= len(row):
-            skipped_invalid_date += 1
-            continue
-            
         parsed = parse_date(row[date_col])
         if parsed is None:
             skipped_invalid_date += 1
@@ -287,13 +263,7 @@ def filter_by_date(data, col_idx, date_from, date_to):
 
 
 def calculate_metrics_by_subject(data, col_idx):
-    # Проверка наличия всех необходимых колонок
-    required_keys = ["subjekt", "podrazd", "nom_knm", "vid", "status", "proverka_ogv", "vid_nadzora", "knd", "narusheniya", "s_vks", "ssylki"]
-    if not all(k in col_idx and col_idx[k] is not None for k in required_keys):
-        return {}
-
     subj_col = col_idx["subjekt"]
-    podrazd_col = col_idx["podrazd"]
     knm_col = col_idx["nom_knm"]
     vid_col = col_idx["vid"]
     status_col = col_idx["status"]
@@ -308,11 +278,6 @@ def calculate_metrics_by_subject(data, col_idx):
     knm_info = {}
 
     for row in data:
-        # Проверка длины строки
-        max_idx = max([subj_col, knm_col, status_col, proverka_col, vid_nadzora_col, vid_col, knd_col, nar_col, vks_col, ssylki_col])
-        if len(row) <= max_idx:
-            continue
-
         reasons_base = []
         if normalize_str(row[status_col]) != "завершена":
             reasons_base.append("status")
@@ -411,25 +376,25 @@ def fmt_och(total, nar):
 
 def auto_adjust_row_heights(ws, start_row, end_row):
     col_a_width = ws.column_dimensions["A"].width or 60
-    
+
     for row_idx in range(start_row, end_row + 1):
         max_lines = 1
         cell = ws.cell(row_idx, 1)
-        
+
         if cell.value:
             text = str(cell.value)
             chars_per_line = int(col_a_width * 1.2)
             lines = len(text) / chars_per_line if chars_per_line > 0 else 1
             max_lines = max(1, int(lines) + 1)
-        
+
         row_height = max_lines * 15
         row_height = min(row_height, 60)
         row_height = max(row_height, 20)
-        
+
         ws.row_dimensions[row_idx].height = row_height
 
 
-def generate_report(district_rows, selected_date, week_start):
+def save_report(district_rows, selected_date, week_start):
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
@@ -485,7 +450,7 @@ def generate_report(district_rows, selected_date, week_start):
             if row["och_total_year"] > 0:
                 return row["och_mp_year"] / row["och_total_year"]
             return 0.0
-        
+
         sorted_rows = sorted(rows, key=get_och_ratio)
 
         start_row = 4
@@ -504,7 +469,6 @@ def generate_report(district_rows, selected_date, week_start):
                 ]
             )
 
-            # --- Color Logic ---
             vks_total_y = row_data["vks_total_year"]
             vks_mp_y = row_data["vks_mp_year"]
             och_total_y = row_data["och_total_year"]
@@ -520,40 +484,35 @@ def generate_report(district_rows, selected_date, week_start):
             vks_ratio_w = (vks_mp_w / vks_total_w) if vks_total_w > 0 else 0.0
             och_ratio_w = (och_mp_w / och_total_w) if och_total_w > 0 else 0.0
 
-            # Условия по годам
             year_vks_ok = vks_ratio_y > 0.10
             year_och_ok = och_ratio_y > 0.80
             year_both_ok = year_vks_ok and year_och_ok
-            
-            # Условия по неделе
+
             week_vks_ok = vks_ratio_w >= 0.10
             week_och_ok = och_ratio_w >= 0.80
             week_both_ok = week_vks_ok and week_och_ok
-            
-            # --- Зелёный: столбец A (субъект) ---
+
             cell_a = ws.cell(row_idx, 1)
             cell_a.border = border
             cell_a.font = Font(name="Arial", size=10)
             cell_a.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
             if year_both_ok:
                 cell_a.fill = green_fill
-            
-            # --- Жёлтый: столбцы C и G (с начала года) ---
+
             cell_c = ws.cell(row_idx, 3)
             cell_c.border = border
             cell_c.font = Font(name="Arial", size=10)
             cell_c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             if not year_vks_ok:
                 cell_c.fill = yellow_fill
-            
+
             cell_g = ws.cell(row_idx, 7)
             cell_g.border = border
             cell_g.font = Font(name="Arial", size=10)
             cell_g.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             if not year_och_ok:
                 cell_g.fill = yellow_fill
-            
-            # --- Красный: столбцы E и I (за неделю) ---
+
             if not year_both_ok and not week_both_ok:
                 cell_e = ws.cell(row_idx, 5)
                 cell_e.border = border
@@ -561,7 +520,7 @@ def generate_report(district_rows, selected_date, week_start):
                 cell_e.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
                 if not week_vks_ok:
                     cell_e.fill = red_fill
-                
+
                 cell_i = ws.cell(row_idx, 9)
                 cell_i.border = border
                 cell_i.font = Font(name="Arial", size=10)
@@ -636,72 +595,103 @@ def generate_report(district_rows, selected_date, week_start):
             f"Прошедшая неделя: {week_start.strftime('%d.%m.%Y')} - {selected_date.strftime('%d.%m.%Y')}",
         )
 
-    # Сохраняем в буфер памяти
     output = io.BytesIO()
     wb.save(output)
     output.seek(0)
     return output
 
 
-# --- ИНТЕРФЕЙС STREAMLIT ---
-
 def main():
     st.set_page_config(page_title="Анализ МП Инспектор", layout="wide")
+
     st.title("📊 Анализ применения МП Инспектор по федеральным округам")
 
-    # 1. Загрузка файла
-    uploaded_file = st.file_uploader("Загрузите файл выгрузки (.xlsx)", type=["xlsx", "xlsm"])
-    
-    if uploaded_file is not None:
-        st.success("Файл загружен!")
-        with st.spinner("Обработка данных..."):
-            data, col_idx = load_data(uploaded_file)
-            
-            if data is None:
-                st.stop()
+    st.markdown("---")
 
-            st.write(f"✅ Загружено строк: {len(data)}")
+    uploaded_file = st.file_uploader(
+        "Загрузите Excel файл с выгрузкой",
+        type=["xlsx", "xlsm"],
+        help=f"Файл должен содержать лист '{SHEET_NAME}'"
+    )
 
-            # 2. Выбор даты
-            col1, col2 = st.columns(2)
-            with col1:
-                selected_date = st.date_input("Дата отчёта:", value=datetime.now().date())
-            
+    selected_date = st.date_input(
+        "Выберите дату отчёта",
+        value=datetime.now().date(),
+        help="Дата, на которую формируется отчёт"
+    )
+
+    if st.button("🚀 Сформировать отчёт", type="primary"):
+        if uploaded_file is None:
+            st.error("❌ Пожалуйста, загрузите Excel файл")
+            return
+
+        try:
+            with st.spinner("Загрузка данных..."):
+                data, col_idx = load_data(uploaded_file)
+                st.success(f"✅ Загружено строк: {len(data)}")
+
             year_start = date(selected_date.year, 1, 1)
             week_start = selected_date - timedelta(days=6)
 
-            with col2:
-                st.info(f"Период с начала года: {year_start} - {selected_date}")
-                st.info(f"Период за неделю: {week_start} - {selected_date}")
+            with st.spinner("Фильтрация данных по периодам..."):
+                ytd_data, ytd_out, ytd_invalid = filter_by_date(
+                    data, col_idx, year_start, selected_date
+                )
 
-            # 3. Фильтрация и расчет
-            ytd_data, ytd_out, ytd_invalid = filter_by_date(data, col_idx, year_start, selected_date)
-            week_data, week_out, week_invalid = filter_by_date(data, col_idx, week_start, selected_date)
+                week_data, week_out, week_invalid = filter_by_date(
+                    data, col_idx, week_start, selected_date
+                )
 
-            metrics_year = calculate_metrics_by_subject(ytd_data, col_idx)
-            metrics_week = calculate_metrics_by_subject(week_data, col_idx)
+                col1, col2 = st.columns(2)
 
-            district_rows = []
-            for short_name, full_name, subjects in DISTRICTS:
-                rows = make_subject_rows(subjects, metrics_year, metrics_week)
-                district_rows.append((short_name, full_name, rows))
+                with col1:
+                    st.info(f"""
+                    **Период с начала года:**
+                    {year_start.strftime('%d.%m.%Y')} - {selected_date.strftime('%d.%m.%Y')}
 
-            # 4. Генерация и скачивание
-            try:
-                output_buffer = generate_report(district_rows, selected_date, week_start)
+                    - Строк в периоде: {len(ytd_data)}
+                    - Строк вне периода: {ytd_out}
+                    - Строк с нераспознанной датой: {ytd_invalid}
+                    """)
+
+                with col2:
+                    st.info(f"""
+                    **Период за прошедшую неделю:**
+                    {week_start.strftime('%d.%m.%Y')} - {selected_date.strftime('%d.%m.%Y')}
+
+                    - Строк в периоде: {len(week_data)}
+                    - Строк вне периода: {week_out}
+                    - Строк с нераспознанной датой: {week_invalid}
+                    """)
+
+            with st.spinner("Расчёт показателей..."):
+                metrics_year = calculate_metrics_by_subject(ytd_data, col_idx)
+                metrics_week = calculate_metrics_by_subject(week_data, col_idx)
+
+            with st.spinner("Формирование отчёта..."):
+                district_rows = []
+                for short_name, full_name, subjects in DISTRICTS:
+                    rows = make_subject_rows(subjects, metrics_year, metrics_week)
+                    district_rows.append((short_name, full_name, rows))
+
+                output = save_report(district_rows, selected_date, week_start)
+
                 filename = f"итоги_фо_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-                
+
+                st.success("✅ Отчёт успешно сформирован!")
+
                 st.download_button(
-                    label="📥 Скачать итоговый отчёт (Excel)",
-                    data=output_buffer,
+                    label="📥 Скачать отчёт",
+                    data=output,
                     file_name=filename,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
-                st.success("Отчёт сформирован! Нажмите кнопку выше для скачивания.")
-            except Exception as e:
-                st.error(f"Ошибка при формировании отчёта: {e}")
-    else:
-        st.info("Пожалуйста, загрузите файл Excel для начала работы.")
+
+        except Exception as e:
+            st.error(f"❌ Ошибка: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc())
+
 
 if __name__ == "__main__":
     main()
